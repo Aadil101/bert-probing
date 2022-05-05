@@ -10,7 +10,7 @@ from pretrained_models import *
 
 from experiments.exp_def import TaskDefs, Experiment
 from data_utils.log_wrapper import create_logger
-from data_utils.task_def import EncoderModelType
+from data_utils.task_def import EncoderModelType, TaskType
 from data_utils.utils import set_environment
 
 from mt_dnn.model import MTDNNModel
@@ -41,10 +41,12 @@ def model_config(parser):
     parser.add_argument('--head_probe_layer', type=int)
     parser.add_argument('--head_probe_idx', type=int)
     parser.add_argument('--head_probe_n_classes', type=int)
+    parser.add_argument('--head_probe_sequence', action='store_true')
 
     # model probing
     parser.add_argument('--model_probe', action='store_true')
     parser.add_argument('--model_probe_n_classes', type=int)
+    parser.add_argument('--model_probe_sequence', action='store_true')
 
     # gradient probing
     parser.add_argument('--gradient_probe', action='store_true')
@@ -215,7 +217,7 @@ args = parser.parse_args()
 # some stuff in data can be automated
 dataset_name = args.dataset_name
 args.data_dir = f'experiments/{dataset_name}/{args.bert_model_type}'
-args.task_def = f'experiments/{dataset_name}/task_def.yaml'
+args.task_def = f'experiments/{dataset_name.split("/")[0]}/task_def.yaml'
 if "/" in dataset_name:
     args.train_datasets = dataset_name.split("/")[0].lower()
 else:
@@ -452,13 +454,30 @@ def main():
             state_dict = torch.load(args.model_ckpt, map_location=f'cuda:{args.devices[0]}')
             state_dict['state']['scoring_list.0.weight'] = model.network.state_dict()['scoring_list.0.weight']
             state_dict['state']['scoring_list.0.bias'] = model.network.state_dict()['scoring_list.0.bias']
+
+            # don't need pooler weights of finetuned model if we're head_probing on a SL task
+            if task_def_list[0].task_type is TaskType.SequenceLabeling:
+                if 'pooler.dense.weight' in state_dict['state']:
+                    del state_dict['state']['pooler.dense.weight']
+                    del state_dict['state']['pooler.dense.bias']
+            
+            else:
+                # if loaded checkpoint is NER or POS, but head probing on a Classification task,
+                # match params.
+                # this has no effect on results, but allows you to load state dict with strict=True,
+                # which is safer.
+                if 'pooler.dense.weight' not in state_dict['state']:
+                   state_dict['state']['pooler.dense.weight'] = model.network.state_dict()['pooler.dense.weight']
+                   state_dict['state']['pooler.dense.bias'] = model.network.state_dict()['pooler.dense.bias']
+            
             model.load_state_dict(state_dict)
         
         # then attach probing head
         model.attach_head_probe(
             args.head_probe_layer,
             args.head_probe_idx,
-            n_classes=args.head_probe_n_classes)
+            n_classes=args.head_probe_n_classes,
+            sequence=args.head_probe_sequence)
         optimizer_parameters = model._get_param_groups()
         model._setup_optim(optimizer_parameters, None, num_all_batches)
     
@@ -479,10 +498,16 @@ def main():
             state_dict = torch.load(args.model_ckpt, map_location=f'cuda:{args.devices[0]}')
             state_dict['state']['scoring_list.0.weight'] = model.network.state_dict()['scoring_list.0.weight']
             state_dict['state']['scoring_list.0.bias'] = model.network.state_dict()['scoring_list.0.bias']
+
+            # if model finetuned under SequenceLabeling and model probing on a task that is Classification
+            if 'pooler.dense.weight' not in state_dict['state'] and 'pooler.dense.weight' in model.network.state_dict():
+                state_dict['state']['pooler.dense.weight'] = model.network.state_dict()['pooler.dense.weight']
+                state_dict['state']['pooler.dense.bias'] = model.network.state_dict()['pooler.dense.bias']
+            
             model.load_state_dict(state_dict)
         
         # then attach probing head
-        model.attach_model_probe(n_classes=args.model_probe_n_classes)
+        model.attach_model_probe(n_classes=args.model_probe_n_classes, sequence=args.model_probe_sequence)
         optimizer_parameters = model._get_param_groups()
         model._setup_optim(optimizer_parameters, None, num_all_batches)
 
