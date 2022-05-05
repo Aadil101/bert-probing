@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 from pretrained_models import *
 
-from experiments.exp_def import TaskDefs
+from experiments.exp_def import TaskDefs, Experiment
 from data_utils.log_wrapper import create_logger
 from data_utils.task_def import EncoderModelType
 from data_utils.utils import set_environment
@@ -27,6 +27,8 @@ from train_utils import (
 )
 from gradient_probing import prediction_gradient
 import wandb
+
+from evaluate import get_metric, build_dataset
 
 def model_config(parser):
     # SET THESE
@@ -85,8 +87,8 @@ def model_config(parser):
     parser.add_argument('--num_hidden_layers', type=int, default=-1)
 
     # BERT pre-training
-    parser.add_argument('--bert_model_type', type=str, default='bert-base-multilingual-cased')
-    parser.add_argument('--init_checkpoint', type=str, default='bert-base-multilingual-cased')
+    parser.add_argument('--bert_model_type', type=str, default='bert-base-cased')
+    parser.add_argument('--init_checkpoint', type=str, default='bert-base-cased')
     parser.add_argument('--do_lower_case', action='store_true')
     parser.add_argument('--masked_lm_prob', type=float, default=0.15)
     parser.add_argument('--short_seq_prob', type=float, default=0.2)
@@ -137,6 +139,9 @@ def train_config(parser):
     parser.add_argument("--model_ckpt", default='', type=str)
     parser.add_argument("--resume", action='store_true')
     parser.add_argument('--huggingface_ckpt', action='store_true')
+
+    # metrics
+    parser.add_argument('--metric_of_choice', default='F1', type=str)
     ############
 
     # DON'T NEED THESE
@@ -484,6 +489,24 @@ def main():
         init_epoch_idx = 0
         init_global_step = 0
     
+    # Build validation dataset
+    metric_meta = task_defs._metric_meta_map[dataset]
+    datasets = ['en']
+    device_id = args.devices[0]
+    task = Experiment[dataset.upper()]
+    task_def_path = args.task_def
+
+    dev_data_lst = []
+    for ds in datasets:
+        data_path = f'experiments/{task.name}/{ds}/{args.bert_model_type}/{task.name.lower()}_dev.json'
+        dev_data = build_dataset(
+            data_path,
+            task_def=TaskDefs(task_def_path).get_task_def(task.name.lower()),
+            device_id=device_id,
+            batch_size=8,
+            max_seq_len=512)
+        dev_data_lst.append(dev_data)  
+
     # dump config
     dump_opt(opt, output_dir)
 
@@ -513,12 +536,21 @@ def main():
             task_id = batch_meta['task_id']
             model.update(batch_meta, batch_data)
 
+            metrics = []
+
             if (model.updates - 1) % (args.log_per_updates) == 0:
-                print_message(logger, f"[e{epoch}] [{model.updates % n_batch_per_epoch}/{n_batch_per_epoch}] train loss: {model.train_loss.avg:.5f}")
+                # Based on evaluate_model_against_multiple_datasets
+                for dev_data in dev_data_lst:
+                    metric = get_metric(model, dev_data, metric_meta, device_id, head_probe=False)[0]
+                    metric = metric[args.metric_of_choice]
+                    metrics.append(metric)
+
+                print_message(logger, f"[e{epoch}] [{model.updates % n_batch_per_epoch}/{n_batch_per_epoch}] train loss: {model.train_loss.avg:.5f} | dev score: {metrics[0]:.5f}")
 
                 if args.wandb:
                     wandb.log({
                         'train/loss': model.train_loss.avg,
+                        'dev/score': metrics[0],
                         'global_step': init_global_step + model.updates,
                         'epoch': epoch
                     })

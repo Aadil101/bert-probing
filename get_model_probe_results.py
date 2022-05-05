@@ -104,12 +104,14 @@ def construct_model(task: Experiment, setting: LingualSetting, device_id: int):
     # load model
     if setting is not LingualSetting.BASE:
         checkpoint_dir = Path('checkpoint').joinpath(f'{task.name}_{setting.name.lower()}')
-        checkpoint = list(checkpoint_dir.rglob('model_5*.pt'))[0]
+        checkpoint = list(checkpoint_dir.rglob('model_*.pt'))[0]
+        #checkpoint = list(checkpoint_dir.rglob('model_5*.pt'))[0]
         assert os.path.exists(checkpoint), checkpoint
     else:
         # dummy.
         checkpoint_dir = Path('checkpoint').joinpath(f'PAWSX_multi')
-        checkpoint = list(checkpoint_dir.rglob('model_5*.pt'))[0]
+        checkpoint = list(checkpoint_dir.rglob('model_*.pt'))[0]
+        #checkpoint = list(checkpoint_dir.rglob('model_5*.pt'))[0]
 
     state_dict = torch.load(checkpoint, map_location=f'cuda:{device_id}')
     config = state_dict['config']
@@ -182,7 +184,7 @@ def evaluate_model_probe(
     data_path = Path('experiments').joinpath(
         downstream_task.name,
         lang,
-        'bert-base-multilingual-cased',
+        'bert-base-cased',
         f'{downstream_task.name.lower()}_test.json'
     )
     print(f'data from {data_path}')
@@ -337,7 +339,7 @@ def get_model_probe_scores(
 
     results_out_file = Path(f'model_probe_outputs').joinpath(
         model_name,
-        f'{out_file_name}.csv')
+        out_file_name)
 
     if results_out_file.is_file():
         print(f'{results_out_file} already exists.')

@@ -3,6 +3,7 @@ pos:
   enable_san: false
   split_names:
     - train
+    - dev
     - test
   labels:
     - ADJ

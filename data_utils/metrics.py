@@ -137,7 +137,7 @@ def calc_metrics(metric_meta, golds, predictions, scores, label_mapper=None):
         if mm == Metric.ACC:
             metric = metric_func(predictions, golds)
             metrics[metric_name] = metric
-            break
+            #break
         elif mm in (Metric.F1, Metric.MCC, Metric.F1MAC, Metric.F1MIC, Metric.CMAT):
             metric = metric_func(predictions, golds)
         elif mm in (Metric.SeqEval, Metric.SeqEvalList):

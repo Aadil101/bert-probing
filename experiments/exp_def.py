@@ -13,6 +13,9 @@ class Experiment(Enum):
     NER = 2
     PAWSX = 3
     MARC = 4
+    COARSE = 5
+    FINER = 6
+    GOEMOTIONS = 7
 
 class LingualSetting(Enum):
     BASE = 0

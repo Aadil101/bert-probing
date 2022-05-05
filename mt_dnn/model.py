@@ -7,6 +7,7 @@ import logging
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import *
+from torch.cuda.amp import GradScaler, autocast
 from data_utils.utils import AverageMeter
 from pytorch_pretrained_bert import BertAdam as Adam
 from module.bert_optim import Adamax, RAdam
@@ -55,6 +56,9 @@ class MTDNNModel(object):
         self.total_param = sum([p.nelement() for p in model.parameters() if p.requires_grad])
         self.train_loss = AverageMeter()
         self.head_probe = opt.get('head_probe', False)
+
+        # gradient clipping
+        self.scaler = GradScaler()
 
     def load_state_dict(self, state_dict):
         self.network.load_state_dict(state_dict['state'], strict=True)
@@ -123,6 +127,16 @@ class MTDNNModel(object):
         if state_dict and 'optimizer' in state_dict:
             self.optimizer.load_state_dict(state_dict['optimizer'])
 
+        if self.config['fp16']:
+            try:
+                from apex import amp
+                global amp
+            except ImportError:
+                raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
+            model, optimizer = amp.initialize(self.network, self.optimizer, opt_level=self.config['fp16_opt_level'])
+            self.network = model
+            self.optimizer = optimizer
+
         if self.config.get('have_lr_scheduler', False):
             if self.config.get('scheduler_type', 'rop') == 'rop':
                 self.scheduler = ReduceLROnPlateau(self.optimizer, mode='max', factor=self.config['lr_gamma'], patience=3)
@@ -177,6 +191,7 @@ class MTDNNModel(object):
             else:
                 weight = batch_data[batch_meta['factor']]
 
+        #with autocast():
         logits, head_probe_logits, model_probe_logits = self.mnetwork(*inputs)
 
         # compute loss
@@ -198,7 +213,11 @@ class MTDNNModel(object):
         self.train_loss.update(loss.item(), batch_size)
         
         loss = loss / self.config.get('grad_accumulation_step', 1)
-        loss.backward()
+        if self.config['fp16']:
+            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            loss.backward()
 
 
     def update(self, batch_meta, batch_data):
@@ -222,6 +241,7 @@ class MTDNNModel(object):
             else:
                 weight = batch_data[batch_meta['factor']]
 
+        #with autocast():
         # fw to get logits
         logits, head_probe_logits, model_probe_logits = self.mnetwork(*inputs)
 
@@ -244,7 +264,11 @@ class MTDNNModel(object):
         self.train_loss.update(loss.item(), batch_size)
         
         loss = loss / self.config.get('grad_accumulation_step', 1)
-        loss.backward()
+        if self.config['fp16']:
+            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            loss.backward()
 
         self.local_updates += 1
         if self.local_updates % self.config.get('grad_accumulation_step', 1) == 0:
@@ -255,6 +279,7 @@ class MTDNNModel(object):
             self.updates += 1
             self.optimizer.step()
             self.optimizer.zero_grad()
+            #self.scaler.update()
 
     def encode(self, batch_meta, batch_data):
         self.network.eval()

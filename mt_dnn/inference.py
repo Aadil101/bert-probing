@@ -87,7 +87,7 @@ def eval_model(model,
     ids = []
     metrics = {}
 
-    for (batch_info, batch_data) in tqdm(data, total=len(data)):
+    for (batch_info, batch_data) in tqdm(data, total=len(data), disable=True):
         batch_info, batch_data = Collater.patch_data(device, batch_info, batch_data)
         score, pred, gold = model.predict(batch_info, batch_data, head_probe, model_probe)
         scores = merge(score, scores)

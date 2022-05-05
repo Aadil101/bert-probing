@@ -1,0 +1,11 @@
+goemotions:
+  data_format: PremiseOnly
+  enable_san: false
+  metric_meta:
+  - ACC
+  - F1MAC
+  loss: CeCriterion
+  kd_loss: MseCriterion
+  adv_loss: SymKlCriterion
+  n_class: 28
+  task_type: Classification

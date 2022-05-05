@@ -137,13 +137,8 @@ def get_metric(model, test_data, metric_meta, device_id, head_probe):
     preds_df = pd.Series(predictions)
     golds_df = pd.Series(golds)
     id_df = pd.Series(ids)
-
-    if 'ACC' in metrics:
-        metric = metrics['ACC']
-    elif 'F1MAC' in metrics:
-        metric = metrics['F1MAC']
     
-    return metric, preds_df, golds_df, id_df
+    return metrics, preds_df, golds_df, id_df
 
 def evaluate_model_against_multiple_datasets(
     model: MTDNNModel,
