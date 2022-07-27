@@ -7,17 +7,20 @@ import csv
 from collections import OrderedDict
 import numpy as np
 
-def _prepare_data(train_langs, test_langs, out_dir):
+def _prepare_data(train_langs, dev_langs, test_langs, out_dir):
     out_dir.mkdir(parents=True, exist_ok=True)
     splits = []
     if train_langs is not None:
         splits.append('train')
+    if dev_langs is not None:
+        splits.append('validation')
     if test_langs is not None:
         splits.append('test')
     
     for split in splits:
-        out_file = out_dir.joinpath(f'pawsx_{split}_tmp.json')
-        final_out_file = out_dir.joinpath(f'pawsx_{split}.tsv')
+        split_mod = split if split != 'validation' else 'dev'
+        out_file = out_dir.joinpath(f'pawsx_{split_mod}_tmp.json')
+        final_out_file = out_dir.joinpath(f'pawsx_{split_mod}.tsv')
 
         if final_out_file.is_file():
             continue
@@ -98,12 +101,12 @@ if __name__ == '__main__':
     # langs = ['en']
     # _prepare_data(langs, langs, out_dir)
     
-    # out_dir = Path(f'experiments/PAWSX/fr')
-    # langs = ['fr']
-    # _prepare_data(langs, langs, out_dir)
+    out_dir = Path(f'experiments/PAWSX/en')
+    langs = ['en']
+    _prepare_data(langs, langs, langs, out_dir)
     
-    foreign_dataset = 'experiments/PAWSX/foreign/pawsx_train.tsv'
-    subsample_and_combine(foreign_dataset, [0.2, 0.4, 0.6, 0.8])
+    #foreign_dataset = 'experiments/PAWSX/foreign/pawsx_train.tsv'
+    #subsample_and_combine(foreign_dataset, [0.2, 0.4, 0.6, 0.8])
 
 
 

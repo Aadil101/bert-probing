@@ -1,0 +1,17 @@
+finer:
+  data_format: PremiseOnly
+  dropout_p: 0.05
+  enable_san: false
+  labels:
+  - CA
+  - GA
+  - NY
+  - TX
+  metric_meta:
+  - ACC
+  - MCC
+  loss: CeCriterion
+  kd_loss: MseCriterion
+  adv_loss: SymKlCriterion
+  n_class: 4
+  task_type: Classification

@@ -8,9 +8,9 @@ import torch
 from torch.utils.data import DataLoader
 from pretrained_models import *
 
-from experiments.exp_def import TaskDefs
+from experiments.exp_def import TaskDefs, Experiment
 from data_utils.log_wrapper import create_logger
-from data_utils.task_def import EncoderModelType
+from data_utils.task_def import EncoderModelType, TaskType
 from data_utils.utils import set_environment
 
 from mt_dnn.model import MTDNNModel
@@ -28,6 +28,10 @@ from train_utils import (
 from gradient_probing import prediction_gradient
 import wandb
 
+from evaluate import get_metric, build_dataset
+
+import time
+
 def model_config(parser):
     # SET THESE
     ##############
@@ -39,10 +43,12 @@ def model_config(parser):
     parser.add_argument('--head_probe_layer', type=int)
     parser.add_argument('--head_probe_idx', type=int)
     parser.add_argument('--head_probe_n_classes', type=int)
+    parser.add_argument('--head_probe_sequence', action='store_true')
 
     # model probing
     parser.add_argument('--model_probe', action='store_true')
     parser.add_argument('--model_probe_n_classes', type=int)
+    parser.add_argument('--model_probe_sequence', action='store_true')
 
     # gradient probing
     parser.add_argument('--gradient_probe', action='store_true')
@@ -51,6 +57,9 @@ def model_config(parser):
     parser.add_argument('--jm_finetune', action='store_true')
     parser.add_argument('--jm_finetune_new', action='store_true') # if task does not exist in 1st stage finetuning
     parser.add_argument('--jm_task_id', type=int, default=0) # if task exists from 1st stage finetuning
+
+    # stop early to just get bert pretrained
+    parser.add_argument('--bert_pretrained', action='store_true')
     ##############
 
     # DON"T NEED THESE
@@ -85,8 +94,8 @@ def model_config(parser):
     parser.add_argument('--num_hidden_layers', type=int, default=-1)
 
     # BERT pre-training
-    parser.add_argument('--bert_model_type', type=str, default='bert-base-multilingual-cased')
-    parser.add_argument('--init_checkpoint', type=str, default='bert-base-multilingual-cased')
+    parser.add_argument('--bert_model_type', type=str, default='bert-base-cased')
+    parser.add_argument('--init_checkpoint', type=str, default='bert-base-cased')
     parser.add_argument('--do_lower_case', action='store_true')
     parser.add_argument('--masked_lm_prob', type=float, default=0.15)
     parser.add_argument('--short_seq_prob', type=float, default=0.2)
@@ -137,6 +146,9 @@ def train_config(parser):
     parser.add_argument("--model_ckpt", default='', type=str)
     parser.add_argument("--resume", action='store_true')
     parser.add_argument('--huggingface_ckpt', action='store_true')
+
+    # metrics
+    parser.add_argument('--metric_of_choice', default='F1', type=str)
     ############
 
     # DON'T NEED THESE
@@ -200,51 +212,57 @@ def train_config(parser):
 
     return parser
 
-# parse args
-parser = argparse.ArgumentParser()
-parser = data_config(parser)
-parser = model_config(parser)
-parser = train_config(parser)
-args = parser.parse_args()
+def main(cliParams=None, logger=None):
+    ########## 1. PARSE ARGS ##########
+    # parse args
+    parser = argparse.ArgumentParser()
+    parser = data_config(parser)
+    parser = model_config(parser)
+    parser = train_config(parser)
+    if cliParams:
+        args = parser.parse_args(cliParams.split())
+    else:
+        args = parser.parse_args()
 
-# some stuff in data can be automated
-dataset_name = args.dataset_name
-args.data_dir = f'experiments/{dataset_name}/{args.bert_model_type}'
-args.task_def = f'experiments/{dataset_name}/task_def.yaml'
-if "/" in dataset_name:
-    args.train_datasets = dataset_name.split("/")[0].lower()
-else:
-    args.train_datasets = dataset_name.lower()
+    # some stuff in data can be automated
+    dataset_name = args.dataset_name
+    args.data_dir = f'experiments/{dataset_name}/{args.bert_model_type}'
+    args.task_def = f'experiments/{dataset_name.split("/")[0]}/task_def.yaml'
+    if "/" in dataset_name:
+        args.train_datasets = dataset_name.split("/")[0].lower()
+    else:
+        args.train_datasets = dataset_name.lower()
 
-# set task name, root data dir, and output dir.
-output_dir = args.output_dir
-data_dir = args.data_dir
+    # set task name, root data dir, and output dir.
+    output_dir = args.output_dir
+    data_dir = args.data_dir
 
-# multiple datasets are split by '_'
-args.train_datasets = args.train_datasets.split('_')
+    # multiple datasets are split by '_'
+    args.train_datasets = args.train_datasets.split('_')
 
-# seed everything.
-set_environment(args.seed, args.cuda)
+    # seed everything.
+    set_environment(args.seed, args.cuda)
 
-# stores task: param_args for each TaskDef param
-task_defs = TaskDefs(args.task_def)
-encoder_type = args.encoder_type
+    # stores task: param_args for each TaskDef param
+    task_defs = TaskDefs(args.task_def)
+    encoder_type = args.encoder_type
 
-exp_name = args.exp_name
+    exp_name = args.exp_name
 
-# make log dir and set logger.
-log_path = f'logs/{exp_name}/{args.log_file}'
-Path(log_path).parent.mkdir(parents=True, exist_ok=True)
-logger = create_logger(__name__, to_disk=True, log_file=log_path)
+    # make log dir and set logger.
+    log_path = f'logs/{exp_name}/{args.log_file}'
+    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+    if logger is None:
+        logger = create_logger(__name__, to_disk=True, log_file=log_path)
 
-# make output dir and set to absolute path.
-if not args.head_probe:
-    output_dir = Path(output_dir).joinpath(exp_name)
+    # make output dir and set to absolute path.
+    if not args.head_probe:
+        output_dir = Path(output_dir).joinpath(exp_name)
 
-output_dir = Path(os.path.abspath(output_dir))
-output_dir.mkdir(exist_ok=True, parents=True)
+    output_dir = Path(os.path.abspath(output_dir))
+    output_dir.mkdir(exist_ok=True, parents=True)
 
-def main():
+    ######### 2. USE ARGS ###########
     print_message(logger, 'Launching MT-DNN training.')
     opt = vars(args)
     args.devices = [int(g) for g in args.devices]
@@ -403,6 +421,8 @@ def main():
                             new_name = '.'.join(new_name)
                             renamed_state_dict[new_name] = p
                     state_dict = renamed_state_dict
+                else:
+                    params_to_remove = []
 
                 for param_name in params_to_remove:
                     if param_name in state_dict:
@@ -424,9 +444,10 @@ def main():
                     params_to_add.extend([f"scoring_list.{i}.weight", f"scoring_list.{i}.bias"])
                 
                 for param_name in params_to_add:
-                    state_dict[param_name] = _init_state_dict[param_name]
+                    #state_dict[param_name] = _init_state_dict[param_name]
+                    state_dict['state'][param_name] = _init_state_dict[param_name]
                 
-                state_dict = {'state': state_dict}
+                #state_dict = {'state': state_dict}
             
             if args.jm_finetune and args.jm_finetune_new:
                 for param in ['weight', 'bias']:
@@ -447,13 +468,30 @@ def main():
             state_dict = torch.load(args.model_ckpt, map_location=f'cuda:{args.devices[0]}')
             state_dict['state']['scoring_list.0.weight'] = model.network.state_dict()['scoring_list.0.weight']
             state_dict['state']['scoring_list.0.bias'] = model.network.state_dict()['scoring_list.0.bias']
+
+            # don't need pooler weights of finetuned model if we're head_probing on a SL task
+            if task_def_list[0].task_type is TaskType.SequenceLabeling:
+                if 'pooler.dense.weight' in state_dict['state']:
+                    del state_dict['state']['pooler.dense.weight']
+                    del state_dict['state']['pooler.dense.bias']
+            
+            else:
+                # if loaded checkpoint is NER or POS, but head probing on a Classification task,
+                # match params.
+                # this has no effect on results, but allows you to load state dict with strict=True,
+                # which is safer.
+                if 'pooler.dense.weight' not in state_dict['state']:
+                   state_dict['state']['pooler.dense.weight'] = model.network.state_dict()['pooler.dense.weight']
+                   state_dict['state']['pooler.dense.bias'] = model.network.state_dict()['pooler.dense.bias']
+            
             model.load_state_dict(state_dict)
         
         # then attach probing head
         model.attach_head_probe(
             args.head_probe_layer,
             args.head_probe_idx,
-            n_classes=args.head_probe_n_classes)
+            n_classes=args.head_probe_n_classes,
+            sequence=args.head_probe_sequence)
         optimizer_parameters = model._get_param_groups()
         model._setup_optim(optimizer_parameters, None, num_all_batches)
     
@@ -474,16 +512,47 @@ def main():
             state_dict = torch.load(args.model_ckpt, map_location=f'cuda:{args.devices[0]}')
             state_dict['state']['scoring_list.0.weight'] = model.network.state_dict()['scoring_list.0.weight']
             state_dict['state']['scoring_list.0.bias'] = model.network.state_dict()['scoring_list.0.bias']
+
+            # don't need pooler weights of finetuned model if we're head_probing on a SL task
+            if task_def_list[0].task_type is TaskType.SequenceLabeling:
+                if 'pooler.dense.weight' in state_dict['state']:
+                    del state_dict['state']['pooler.dense.weight']
+                    del state_dict['state']['pooler.dense.bias']
+            
+            else:
+                # if model finetuned under SequenceLabeling and model probing on a task that is Classification
+                if 'pooler.dense.weight' not in state_dict['state'] and 'pooler.dense.weight' in model.network.state_dict():
+                    state_dict['state']['pooler.dense.weight'] = model.network.state_dict()['pooler.dense.weight']
+                    state_dict['state']['pooler.dense.bias'] = model.network.state_dict()['pooler.dense.bias']
+            
             model.load_state_dict(state_dict)
         
         # then attach probing head
-        model.attach_model_probe(n_classes=args.model_probe_n_classes)
+        model.attach_model_probe(n_classes=args.model_probe_n_classes, sequence=args.model_probe_sequence)
         optimizer_parameters = model._get_param_groups()
         model._setup_optim(optimizer_parameters, None, num_all_batches)
 
         init_epoch_idx = 0
         init_global_step = 0
     
+    # Build validation dataset
+    metric_meta = task_defs._metric_meta_map[dataset]
+    datasets = ['en']
+    device_id = args.devices[0]
+    task = Experiment[dataset.upper()]
+    task_def_path = args.task_def
+
+    dev_data_lst = []
+    for ds in datasets:
+        data_path = f'experiments/{task.name}/{ds}/{args.bert_model_type}/{task.name.lower()}_dev.json'
+        dev_data = build_dataset(
+            data_path,
+            EncoderModelType.BERT,
+            batch_size=8,
+            max_seq_len=512,
+            task_def=TaskDefs(task_def_path).get_task_def(task.name.lower()))
+        dev_data_lst.append(dev_data)  
+
     # dump config
     dump_opt(opt, output_dir)
 
@@ -498,9 +567,14 @@ def main():
         return
     
     if args.wandb:
-        wandb.init(project='soroush', name=exp_name)
+        wandb.init(project='soroush', name=f'{exp_name}', tags=['latest_datasets', f'seed_{args.seed}'])
+
+    if args.bert_pretrained:
+        model_file = save_checkpoint(model, 0, output_dir)
+        return
 
     # main training loop
+    start_time = time.time()
     for epoch in range(init_epoch_idx, init_epoch_idx+args.epochs):        
         print_message(logger, f'At epoch {epoch}', level=1)
 
@@ -513,18 +587,40 @@ def main():
             task_id = batch_meta['task_id']
             model.update(batch_meta, batch_data)
 
+            metrics = []
+
             if (model.updates - 1) % (args.log_per_updates) == 0:
-                print_message(logger, f"[e{epoch}] [{model.updates % n_batch_per_epoch}/{n_batch_per_epoch}] train loss: {model.train_loss.avg:.5f}")
+                # Based on evaluate_model_against_multiple_datasets
+                for dev_data in dev_data_lst:
+                    metric = get_metric(
+                        model, 
+                        dev_data, 
+                        metric_meta, 
+                        task_def.task_type, 
+                        device_id, 
+                        task_def.label_vocab.ind2tok, 
+                        model_probe=args.model_probe, 
+                        head_probe=args.head_probe
+                    )[0]
+                    metric = metric[args.metric_of_choice]
+                    metrics.append(metric)
+
+                print_message(logger, f"[e{epoch}] [{model.updates % n_batch_per_epoch}/{n_batch_per_epoch}] train loss: {model.train_loss.avg:.5f} | dev score: {metrics[0]:.5f}")
+                #print_message(logger, f"[e{epoch}] [{model.updates % n_batch_per_epoch}/{n_batch_per_epoch}] train loss: {model.train_loss.avg:.5f} | dev score: {metrics[0]['ACC']:.5f} | dev score: {metrics[0]['MCC']:.5f}")
 
                 if args.wandb:
                     wandb.log({
                         'train/loss': model.train_loss.avg,
+                        'dev/score': metrics[0],
                         'global_step': init_global_step + model.updates,
                         'epoch': epoch
                     })
         
         model_file = save_checkpoint(model, epoch, output_dir)
         print_message(logger, f'Saving mt-dnn model to {model_file}')
+    if args.wandb:
+        wandb.join()
+    print_message(logger, f'Total time taken: {time.time()-start_time}')
 
 if __name__ == '__main__':
     main()

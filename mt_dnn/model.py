@@ -2,11 +2,14 @@
 # Copyright (c) Microsoft. All rights reserved.
 from typing import List
 import torch
+from data_utils.task_def import TaskType
 import tasks
+import numpy as np
 import logging
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import *
+from torch.cuda.amp import GradScaler, autocast
 from data_utils.utils import AverageMeter
 from pytorch_pretrained_bert import BertAdam as Adam
 from module.bert_optim import Adamax, RAdam
@@ -14,7 +17,7 @@ from mt_dnn.loss import LOSS_REGISTRY
 from mt_dnn.matcher import SANBertNetwork
 from mt_dnn.loss import *
 from experiments.exp_def import TaskDef
-from data_utils.my_statics import DUMPY_STRING_FOR_EMPTY_ANS
+import einops
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +57,12 @@ class MTDNNModel(object):
         # stats and misc
         self.total_param = sum([p.nelement() for p in model.parameters() if p.requires_grad])
         self.train_loss = AverageMeter()
+
+        self.model_probe = opt.get('model_probe', False)
         self.head_probe = opt.get('head_probe', False)
+
+        # gradient clipping
+        self.scaler = GradScaler()
 
     def load_state_dict(self, state_dict):
         self.network.load_state_dict(state_dict['state'], strict=True)
@@ -62,14 +70,17 @@ class MTDNNModel(object):
     def get_head_probe_layer(self, hl):
         return self.network.get_attention_layer(hl)
     
-    def attach_head_probe(self, hl, hi, n_classes):
-        self.network.attach_head_probe(hl, hi, n_classes, self.device)
+    def attach_head_probe(self, hl, hi, n_classes, sequence=False):
+        self.head_probe = True
+        self.network.attach_head_probe(hl, hi, n_classes, sequence, self.device)
 
     def detach_head_probe(self, hl):
+        self.head_probe = False
         self.network.detach_head_probe(hl)
     
-    def attach_model_probe(self, n_classes):
-        self.network.attach_model_probe(n_classes, self.device)
+    def attach_model_probe(self, n_classes, sequence):
+        self.model_probe = True
+        self.network.attach_model_probe(n_classes, self.device, sequence=sequence)
 
     def _get_param_groups(self):
         no_decay = ['bias', 'gamma', 'beta', 'LayerNorm.bias', 'LayerNorm.weight']
@@ -122,6 +133,16 @@ class MTDNNModel(object):
 
         if state_dict and 'optimizer' in state_dict:
             self.optimizer.load_state_dict(state_dict['optimizer'])
+
+        if self.config['fp16']:
+            try:
+                from apex import amp
+                global amp
+            except ImportError:
+                raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
+            model, optimizer = amp.initialize(self.network, self.optimizer, opt_level=self.config['fp16_opt_level'])
+            self.network = model
+            self.optimizer = optimizer
 
         if self.config.get('have_lr_scheduler', False):
             if self.config.get('scheduler_type', 'rop') == 'rop':
@@ -177,6 +198,7 @@ class MTDNNModel(object):
             else:
                 weight = batch_data[batch_meta['factor']]
 
+        #with autocast():
         logits, head_probe_logits, model_probe_logits = self.mnetwork(*inputs)
 
         # compute loss
@@ -198,12 +220,30 @@ class MTDNNModel(object):
         self.train_loss.update(loss.item(), batch_size)
         
         loss = loss / self.config.get('grad_accumulation_step', 1)
-        loss.backward()
+        if self.config['fp16']:
+            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            loss.backward()
 
+    def _to_cuda(self, tensor):
+        if tensor is None: return tensor
 
-    def update(self, batch_meta, batch_data):
+        if isinstance(tensor, list) or isinstance(tensor, tuple):
+            #y = [e.cuda(non_blocking=True) for e in tensor]
+            y = [e.to(self.device) for e in tensor]
+            for e in y:
+                e.requires_grad = False
+        else:
+            #y = tensor.cuda(non_blocking=True)
+            y = tensor.to(self.device)
+            y.requires_grad = False
+        return y
+
+    def update(self, batch_meta, batch_data, head_mask=None):
         self.network.train()
         y = batch_data[batch_meta['label']]
+        y = self._to_cuda(y) if self.config['cuda'] else y
 
         task_id = batch_meta['task_id']
         inputs = batch_data[:batch_meta['input_len']]
@@ -222,29 +262,32 @@ class MTDNNModel(object):
             else:
                 weight = batch_data[batch_meta['factor']]
 
+        #with autocast():
         # fw to get logits
-        logits, head_probe_logits, model_probe_logits = self.mnetwork(*inputs)
+        if head_mask is None:
+            logits = self.mnetwork(*inputs, model_probe=self.model_probe, head_probe=self.head_probe)
+        else:
+            logits, attention = self.mnetwork(*inputs, model_probe=self.model_probe, head_probe=self.head_probe, head_mask=head_mask)
 
         # compute loss
         loss = 0
         loss_criterion = self.task_loss_criterion[task_id]
         if loss_criterion and (y is not None):
             y.to(logits.device)
-            if head_probe_logits is None and model_probe_logits is None:
-                loss = loss_criterion(logits, y, weight, ignore_index=-1)
-            else:
-                if head_probe_logits is not None:
-                    loss = loss_criterion(head_probe_logits, y, weight, ignore_index=-1)
-                elif model_probe_logits is not None:
-                    loss = loss_criterion(model_probe_logits, y, weight, ignore_index=-1)
-                else:
-                    raise ValueError
+            if len(logits.shape) > 2:
+                # sequence output, combine seq w/ batch
+                logits = einops.rearrange(logits, 'b s c -> (b s) c')
+            loss = loss_criterion(logits, y, weight, ignore_index=-1)
 
         batch_size = batch_data[batch_meta['token_id']].size(0)
         self.train_loss.update(loss.item(), batch_size)
         
         loss = loss / self.config.get('grad_accumulation_step', 1)
-        loss.backward()
+        if self.config['fp16']:
+            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            loss.backward()
 
         self.local_updates += 1
         if self.local_updates % self.config.get('grad_accumulation_step', 1) == 0:
@@ -253,8 +296,13 @@ class MTDNNModel(object):
                     self.network.parameters(),
                     self.config['global_grad_clipping'])
             self.updates += 1
-            self.optimizer.step()
+            if head_mask is None:
+                self.optimizer.step()
             self.optimizer.zero_grad()
+            #self.scaler.update()
+
+        if head_mask is not None:
+            return logits, attention
 
     def encode(self, batch_meta, batch_data):
         self.network.eval()
@@ -278,25 +326,47 @@ class MTDNNModel(object):
         task_type = task_def.task_type
         task_obj = tasks.get_task_obj(task_def)
         inputs = batch_data[:batch_meta['input_len']]
+
         if len(inputs) == 3:
             inputs.append(None)
             inputs.append(None)
         inputs.append(task_id)
 
-        score, head_probe_logits, model_probe_logits = self.mnetwork(*inputs)
-        if head_probe:
-            score = head_probe_logits
-        elif model_probe:
-            score = model_probe_logits
-
+        if model_probe:
+            if isinstance(self.mnetwork, nn.DataParallel):
+                self.mnetwork.module.task_types[task_id] = task_def.task_type
+            else:
+                self.mnetwork.task_types[task_id] = task_def.task_type
+                
+        score = self.mnetwork(
+            *inputs,
+            model_probe=model_probe,
+            head_probe=head_probe
+        )
+    
         if task_obj is not None:
             score, predict = task_obj.test_predict(score)
+        elif task_type == TaskType.SequenceLabeling:
+            mask = batch_data[batch_meta["mask"]]
+            score = score.contiguous()
+            score = score.data.cpu()
+            score = score.numpy()
+            predict = np.argmax(score, axis=1).reshape(mask.size()).tolist()
+            valid_length = mask.sum(1).tolist()
+            final_predict = []
+
+            for idx, p in enumerate(predict):
+                final_predict.append(p[: valid_length[idx]])
+
+            score = score.reshape(-1).tolist()
+            return score, final_predict, batch_meta["label"]
         else:
             raise ValueError("Unknown task_type: %s" % task_type)
+        
         return score, predict, batch_meta['label']
 
     def save(self, filename):
-        if isinstance(self.mnetwork, torch.nn.parallel.DistributedDataParallel):
+        if isinstance(self.mnetwork, nn.DataParallel):
             model = self.mnetwork.module
         else:
             model = self.network

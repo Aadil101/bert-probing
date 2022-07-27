@@ -104,7 +104,7 @@ def load_data(data_file, task_def_path, language):
 
     return test_data
 
-def get_attention(model, batch_meta, batch_data):
+def get_attention(model, batch_meta, batch_data, device_id=0):
     batch_meta, batch_data = Collater.patch_data(device_id, batch_meta, batch_data)
 
     # fwd pass and get CLS attention

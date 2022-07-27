@@ -1,0 +1,14 @@
+sst2:
+  data_format: PremiseOnly
+  enable_san: false
+  labels:
+  - '0'
+  - '1'
+  metric_meta:
+  - ACC
+  - F1
+  loss: CeCriterion
+  kd_loss: MseCriterion
+  adv_loss: SymKlCriterion
+  n_class: 2
+  task_type: Classification

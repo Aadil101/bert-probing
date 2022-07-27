@@ -1,0 +1,17 @@
+sst5:
+  data_format: PremiseOnly
+  enable_san: false
+  labels:
+  - A
+  - B
+  - C
+  - D
+  - E
+  metric_meta:
+  - ACC
+  - F1MAC
+  loss: CeCriterion
+  kd_loss: MseCriterion
+  adv_loss: SymKlCriterion
+  n_class: 5
+  task_type: Classification
