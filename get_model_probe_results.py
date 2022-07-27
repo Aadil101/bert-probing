@@ -50,6 +50,7 @@ def evaluate_model_probe(
     finetuned_setting: LingualSetting,
     probe_setting: LingualSetting,
     model_ckpt: str,
+    metric_of_choice: str,
     batch_size: int=8,
     max_seq_len: int=512,
     device_id: int=0,
@@ -123,7 +124,7 @@ def evaluate_model_probe(
     layer.model_probe_head.bias = nn.Parameter(bias)
 
     # compute acc and save
-    acc = get_metric(
+    metric = get_metric(
         model,
         test_data,
         task_def.metric_meta,
@@ -131,15 +132,15 @@ def evaluate_model_probe(
         device_id,
         task_def.label_vocab.ind2tok,
         model_probe=True)[0]
-        
-    return acc
+    
+    return metric[metric_of_choice]
 
 def combine_all_model_probe_scores(mean=True, std=True):
     combined_results = []
     combined_std = []
 
-    for task in list(Experiment):
-        for setting in [LingualSetting.CROSS, LingualSetting.MULTI]:  
+    for task in [Experiment.COARSE, Experiment.FINER]:
+        for setting in [LingualSetting.CROSS]:  
             result_for_task = f'model_probe_outputs/{task.name}_{setting.name.lower()}/evaluation_results.csv'
             result_for_task = pd.read_csv(result_for_task, index_col=0)
             model_name = f'{task.name}_{setting.name.lower()}'
@@ -160,15 +161,11 @@ def combine_all_model_probe_scores(mean=True, std=True):
         if len(df) > 0:
             combined_df = pd.concat(df, axis=0)
             if i == 0:
-                if mean:
-                    out_file_name = 'model_probe_outputs/final_result.csv'
-                else:
-                    out_file_name = 'model_probe_outputs/final_result_mean.csv'
+                out_file_name = f'model_probe_outputs/final_results_mean.csv'
             else:
-                if std:
-                    out_file_name = 'model_probe_outputs/final_result_std.csv'
-            
+                out_file_name = f'model_probe_outputs/final_results_std.csv'
             combined_df.to_csv(out_file_name)
+            '''
             create_heatmap(
                 data_df=combined_df,
                 row_labels=list(combined_df.index),
@@ -177,6 +174,7 @@ def combine_all_model_probe_scores(mean=True, std=True):
                 yaxlabel='model',
                 out_file=Path(out_file_name).with_suffix('')
             )
+            '''
 
 def get_model_probe_final_score(
     finetuned_task: Experiment,
@@ -207,6 +205,60 @@ def get_model_probe_scores(
     probe_task: Experiment,
     model_ckpt: str,
     out_file_name: str,
+    metric_of_choice: str,
+    device_id: int,
+    lang: str,
+    seed: int,
+    batch_size: int = 8,
+    max_seq_len: int = 512):
+    
+    if finetuned_setting is LingualSetting.BASE:
+        model_name = 'mBERT'
+    else:
+        model_name = f'{finetuned_task.name}_{finetuned_setting.name.lower()}'
+
+    results_out_file = Path(f'model_probe_outputs').joinpath(
+        model_name,
+        out_file_name)
+
+    if results_out_file.is_file():
+        print(f'{results_out_file} already exists.')
+        results = pd.read_csv(results_out_file, index_col=0)
+    else:
+        print(results_out_file.parent)
+        results_out_file.parent.mkdir(parents=True, exist_ok=True)
+        results = pd.DataFrame(columns=[probe_task.name])
+    
+    acc = evaluate_model_probe(
+        probe_task,
+        finetuned_task,
+        finetuned_setting,
+        probe_setting,
+        model_ckpt,
+        metric_of_choice,
+        batch_size,
+        max_seq_len,
+        device_id,
+        lang)
+    
+    if seed not in results.index:
+        results.loc[seed] = np.nan
+    
+    if probe_task.name not in results.columns:
+        results[probe_task.name] = np.nan
+    
+    results.loc[seed, probe_task.name] = acc
+
+    results.to_csv(results_out_file)
+'''
+def get_model_probe_scores(
+    finetuned_task: Experiment,
+    finetuned_setting: LingualSetting,
+    probe_setting: LingualSetting,
+    probe_task: Experiment,
+    model_ckpt: str,
+    out_file_name: str,
+    metric_of_choice: str,
     device_id: int,
     lang: str,
     batch_size: int = 8,
@@ -238,11 +290,11 @@ def get_model_probe_scores(
             finetuned_setting,
             probe_setting,
             model_ckpt,
+            metric_of_choice,
             batch_size,
             max_seq_len,
             device_id,
             lang)
-
         results[0, i] = acc
     
     results = pd.DataFrame(results)
@@ -250,7 +302,7 @@ def get_model_probe_scores(
     results.columns = [task.name for task in tasks]
 
     results.to_csv(results_out_file)
-
+'''
 def create_perlang_results(finetuned_task, finetuned_setting, downstream_task, langs):
     def get_data(root):
         data = pd.DataFrame(np.zeros((1, len(langs))))
@@ -348,6 +400,7 @@ def get_scores_main(args):
                 Experiment[task.upper()],
                 args.model_ckpt,
                 f'{task}_{lang}',
+                args.metric_of_choice,
                 args.device_id,
                 lang,
                 args.batch_size,
@@ -403,6 +456,7 @@ if __name__ == '__main__':
     parser.add_argument('--model_ckpt', type=str, default='', help='checkpoint of model probe head')
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--max_seq_len', type=int, default=512)
+    parser.add_argument('--metric_of_choice', type=str, default='')
     args = parser.parse_args()
 
     get_scores_main(args)

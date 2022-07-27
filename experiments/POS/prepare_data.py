@@ -6,7 +6,7 @@ import numpy as np
 from conllu import parse_incr
 import shutil
 
-DATA_ROOT = Path('/home/june/mt-dnn/experiments/POS/data')
+DATA_ROOT = Path('/home/aadil/bert-probing/experiments/POS/data')
 DATASETS = {
     'en':  DATA_ROOT.joinpath('en/UD_English-EWT'),
     'fr': DATA_ROOT.joinpath('fr/UD_French-GSD'),
@@ -30,7 +30,7 @@ def simplify_name(dataset_dirs):
 
 def _prepare_data(dataset_dirs, out_dir):
     out_dir.mkdir(parents=True, exist_ok=True)
-    for split in ['train', 'test']:
+    for split in ['train', 'dev', 'test']:
         if split not in dataset_dirs:
             continue
             
@@ -134,13 +134,14 @@ def make_for_lang(lang):
     else:
         dataset_dirs = {
             'train': [DATASETS[lang]],
+            'dev': [DATASETS[lang]],
             'test': [DATASETS[lang]]
         }
         _prepare_data(dataset_dirs, out_dir)
     copy_master_task_def(out_dir)
 
 def make_per_language():
-    for lang in ['en', 'fr', 'de', 'es']:
+    for lang in ['en']:#, 'fr', 'de', 'es']:
         make_for_lang(lang)
 
 def make_crosslingual():
@@ -164,7 +165,8 @@ def make_fractional_training():
 
 if __name__ == '__main__':
     make_per_language()
-    make_multilingual()
-    make_crosslingual()
-    make_foreign()
+    print('Done')
+    #make_multilingual()
+    #make_crosslingual()
+    #make_foreign()
             

@@ -1,0 +1,15 @@
+cola:
+  data_format: PremiseOnly
+  dropout_p: 0.05
+  enable_san: false
+  labels:
+  - '0'
+  - '1'
+  metric_meta:
+  - ACC
+  - MCC
+  loss: CeCriterion
+  kd_loss: MseCriterion
+  adv_loss: SymKlCriterion
+  n_class: 2
+  task_type: Classification

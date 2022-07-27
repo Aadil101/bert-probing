@@ -29,8 +29,10 @@ class SANBertNetwork(nn.Module):
         self.preloaded_config = None
 
         literal_encoder_type = EncoderModelType(self.encoder_type).name.lower()
-        _, model_class, _ = MODEL_CLASSES[literal_encoder_type]
+        config_class, model_class, tokenizer_class = MODEL_CLASSES[literal_encoder_type]
         self.bert = model_class.from_pretrained(opt['init_checkpoint'], cache_dir=opt['transformer_cache'])
+        #preloaded_config = config_class.from_dict(opt)
+        #self.bert = model_class(preloaded_config)
                     
         hidden_size = self.bert.config.hidden_size
 
@@ -123,7 +125,7 @@ class SANBertNetwork(nn.Module):
         embedding_output = self.bert.embeddings(input_ids, token_type_ids)
         return embedding_output
 
-    def encode(self, input_ids, token_type_ids, attention_mask, inputs_embeds=None, y_input_ids=None, output_hidden_states=False):
+    def encode(self, input_ids, token_type_ids, attention_mask, inputs_embeds=None, y_input_ids=None, output_hidden_states=False, head_mask=None):
         if self.encoder_type == EncoderModelType.T5:
             outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask, inputs_embeds=inputs_embeds)
             last_hidden_state = outputs.last_hidden_state
@@ -133,13 +135,13 @@ class SANBertNetwork(nn.Module):
             # return logits from LM header
             last_hidden_state = outputs.logits
             all_hidden_states = outputs.encoder_last_hidden_state # num_layers + 1 (embeddings)
-        else:
+        elif head_mask is None:
             outputs = self.bert(
                 input_ids=input_ids,
                 token_type_ids=token_type_ids,
                 attention_mask=attention_mask,
                 inputs_embeds=inputs_embeds,
-                output_hidden_states=output_hidden_states
+                output_hidden_states=output_hidden_states,
             )
 
             last_hidden_state = outputs.last_hidden_state
@@ -147,19 +149,41 @@ class SANBertNetwork(nn.Module):
             head_probe_output = outputs.head_probe_output
             model_probe_output = outputs.model_probe_output
 
-        return last_hidden_state, all_hidden_states, head_probe_output, model_probe_output
+            return last_hidden_state, all_hidden_states, head_probe_output, model_probe_output
+        else:
+            outputs = self.bert(
+                input_ids=input_ids,
+                token_type_ids=token_type_ids,
+                attention_mask=attention_mask,
+                inputs_embeds=inputs_embeds,
+                output_hidden_states=output_hidden_states,
+                output_attentions=True,
+                head_mask=head_mask
+            )
 
-    def forward(self, input_ids, token_type_ids, attention_mask, premise_mask=None, hyp_mask=None, task_id=0, y_input_ids=None, fwd_type=0, embed=None, model_probe=False, head_probe=False):        
+            last_hidden_state = outputs.last_hidden_state
+            all_hidden_states = outputs.hidden_states 
+            head_probe_output = outputs.head_probe_output
+            model_probe_output = outputs.model_probe_output
+            attentions = outputs.attentions
+            
+            return last_hidden_state, all_hidden_states, head_probe_output, model_probe_output, attentions
+
+
+    def forward(self, input_ids, token_type_ids, attention_mask, premise_mask=None, hyp_mask=None, task_id=0, y_input_ids=None, fwd_type=0, embed=None, model_probe=False, head_probe=False, head_mask=None):        
         assert fwd_type == 0, fwd_type
         encode_outputs = self.encode(
                             input_ids,
                             token_type_ids,
                             attention_mask,
                             y_input_ids=y_input_ids,
-                            output_hidden_states=True
+                            output_hidden_states=True,
+                            head_mask=head_mask,
                         )
-        
-        last_hidden_state, all_hidden_states, head_probe_output, model_probe_output = encode_outputs
+        if head_mask is None:
+            last_hidden_state, all_hidden_states, head_probe_output, model_probe_output = encode_outputs
+        else:
+            last_hidden_state, all_hidden_states, head_probe_output, model_probe_output, attention = encode_outputs
 
         decoder_opt = self.decoder_opt[task_id]
         task_type = self.task_types[task_id]
@@ -184,7 +208,10 @@ class SANBertNetwork(nn.Module):
                                             decoder_opt,
                                             self.dropout_list[task_id],
                                             self.scoring_list[task_id])
-            return logits
+            if head_mask is None:
+                return logits
+            else:
+                return logits, attention
 
         elif task_type == TaskType.Span:
             assert decoder_opt != 1

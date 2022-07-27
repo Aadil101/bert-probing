@@ -116,9 +116,9 @@ def get_metric(
     golds_df = pd.Series(golds)
     id_df = pd.Series(ids)
 
-    metric_name = metric_meta[0].name
+    #metric_name = metric_meta[0].name
 
-    return metrics[metric_name], preds_df, golds_df, id_df
+    return metrics, preds_df, golds_df, id_df
 
 def base_construct_model(checkpoint: str, task: Experiment, task_def_path: str, device_id: int):
     task_defs = TaskDefs(task_def_path)

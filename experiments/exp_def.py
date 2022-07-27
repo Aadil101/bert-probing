@@ -16,6 +16,14 @@ class Experiment(Enum):
     COARSE = 5
     FINER = 6
     GOEMOTIONS = 7
+    SST5 = 8
+    COLA = 9
+    MRPC = 10
+    SCITAIL = 11
+    WNLI = 12
+    PAWS = 13
+    SST2 = 14
+    EMOTION = 15
 
 class LingualSetting(Enum):
     BASE = 0

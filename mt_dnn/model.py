@@ -226,10 +226,24 @@ class MTDNNModel(object):
         else:
             loss.backward()
 
+    def _to_cuda(self, tensor):
+        if tensor is None: return tensor
 
-    def update(self, batch_meta, batch_data):
+        if isinstance(tensor, list) or isinstance(tensor, tuple):
+            #y = [e.cuda(non_blocking=True) for e in tensor]
+            y = [e.to(self.device) for e in tensor]
+            for e in y:
+                e.requires_grad = False
+        else:
+            #y = tensor.cuda(non_blocking=True)
+            y = tensor.to(self.device)
+            y.requires_grad = False
+        return y
+
+    def update(self, batch_meta, batch_data, head_mask=None):
         self.network.train()
         y = batch_data[batch_meta['label']]
+        y = self._to_cuda(y) if self.config['cuda'] else y
 
         task_id = batch_meta['task_id']
         inputs = batch_data[:batch_meta['input_len']]
@@ -250,7 +264,10 @@ class MTDNNModel(object):
 
         #with autocast():
         # fw to get logits
-        logits = self.mnetwork(*inputs, model_probe=self.model_probe, head_probe=self.head_probe)
+        if head_mask is None:
+            logits = self.mnetwork(*inputs, model_probe=self.model_probe, head_probe=self.head_probe)
+        else:
+            logits, attention = self.mnetwork(*inputs, model_probe=self.model_probe, head_probe=self.head_probe, head_mask=head_mask)
 
         # compute loss
         loss = 0
@@ -279,9 +296,13 @@ class MTDNNModel(object):
                     self.network.parameters(),
                     self.config['global_grad_clipping'])
             self.updates += 1
-            self.optimizer.step()
+            if head_mask is None:
+                self.optimizer.step()
             self.optimizer.zero_grad()
             #self.scaler.update()
+
+        if head_mask is not None:
+            return logits, attention
 
     def encode(self, batch_meta, batch_data):
         self.network.eval()
@@ -312,7 +333,10 @@ class MTDNNModel(object):
         inputs.append(task_id)
 
         if model_probe:
-            self.mnetwork.task_types[task_id] = task_def.task_type
+            if isinstance(self.mnetwork, nn.DataParallel):
+                self.mnetwork.module.task_types[task_id] = task_def.task_type
+            else:
+                self.mnetwork.task_types[task_id] = task_def.task_type
                 
         score = self.mnetwork(
             *inputs,
@@ -342,7 +366,7 @@ class MTDNNModel(object):
         return score, predict, batch_meta['label']
 
     def save(self, filename):
-        if isinstance(self.mnetwork, torch.nn.parallel.DistributedDataParallel):
+        if isinstance(self.mnetwork, nn.DataParallel):
             model = self.mnetwork.module
         else:
             model = self.network

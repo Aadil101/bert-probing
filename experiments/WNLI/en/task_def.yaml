@@ -1,15 +1,14 @@
-pawsx:
+wnli:
   data_format: PremiseAndOneHypothesis
-  enable_san: False
+  enable_san: false 
   labels:
   - '0'
   - '1'
   metric_meta:
-  - F1MAC
-  n_class: 2
+  - ACC
+  - F1
   loss: CeCriterion
-  split_names:
-  - train
-  - dev
-  - test
+  kd_loss: MseCriterion
+  adv_loss: SymKlCriterion
+  n_class: 2
   task_type: Classification
