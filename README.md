@@ -1,4 +1,4 @@
-# Probing BERT Models Finetuned On Cultural Background Datasets
+# Probing BERT Fine-Tuned For Cultural Background Prediction
 
 ## Introduction
 
