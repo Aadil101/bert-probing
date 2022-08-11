@@ -567,7 +567,7 @@ def main(cliParams=None, logger=None):
         return
     
     if args.wandb:
-        wandb.init(project='soroush', name=f'{exp_name}', tags=['latest_datasets', f'seed_{args.seed}'])
+        wandb.init(project='soroush', name=f'{exp_name}', tags=[f'seed_{args.seed}'])
 
     if args.bert_pretrained:
         model_file = save_checkpoint(model, 0, output_dir)
